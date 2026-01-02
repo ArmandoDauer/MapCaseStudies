@@ -3,18 +3,19 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Mapa de Paragens (Excel → Leaflet)</title>
+  <title>Mapa (Paragens + Linhas)</title>
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 
-  <!-- SheetJS (XLSX) para ler Excel no browser -->
+  <!-- SheetJS (XLSX) -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js"></script>
 
   <style>
     html, body { height: 100%; margin: 0; }
     #map { height: 100%; }
+
     .panel {
       position: absolute;
       z-index: 1000;
@@ -26,32 +27,15 @@
       padding: 10px 12px;
       font: 13px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
       box-shadow: 0 10px 28px rgba(0,0,0,0.14);
-      max-width: 360px;
+      max-width: 380px;
     }
     .panel b { display:block; margin-bottom: 6px; }
-    .row { display:flex; gap:8px; align-items:center; margin-top:8px; }
-    .row label { font-size: 12px; color:#333; min-width: 92px; }
-    .row input[type="file"] { width: 240px; }
     .hint { font-size: 12px; color:#444; margin-top:6px; }
     .status { font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
     .ok { color:#065f46; }
     .err { color:#b91c1c; }
-    .btn {
-      margin-top: 10px;
-      border: 1px solid rgba(0,0,0,0.18);
-      background: white;
-      border-radius: 10px;
-      padding: 8px 10px;
-      cursor: pointer;
-      font-size: 12px;
-    }
-    .legend {
-      margin-top: 10px;
-      font-size: 12px;
-      color: #333;
-      display: grid;
-      gap: 6px;
-    }
+
+    .legend { margin-top: 10px; font-size: 12px; color: #333; display: grid; gap: 6px; }
     .legend-item { display:flex; align-items:center; gap:8px; }
     .swatch-circle {
       width: 12px; height: 12px; border-radius: 999px;
@@ -64,26 +48,30 @@
       border-bottom: 14px solid #111;
       transform: translateY(-1px);
     }
+    .btn {
+      margin-top: 10px;
+      border: 1px solid rgba(0,0,0,0.18);
+      background: white;
+      border-radius: 10px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    code { background: rgba(0,0,0,0.04); padding: 1px 4px; border-radius: 6px; }
   </style>
 </head>
 <body>
   <div id="map"></div>
 
   <div class="panel">
-    <b>Mapa de Paragens (Excel)</b>
-
-    <div class="row">
-      <label>Excel 1</label>
-      <input id="fileStops" type="file" accept=".xlsx,.xls" />
+    <b>Mapa (Paragens + Linhas)</b>
+    <div class="hint">
+      Carrega automaticamente:
+      <br>• <code>Paragens.xlsx</code> (folha “Paragens”)
+      <br>• <code>Linhas.xlsx</code> (folha “Linhas”)
     </div>
-    <div class="hint">Excel 1: nome, tipo (autocarro/metro), latitude, longitude.</div>
 
-    <div class="row">
-      <label>Excel 2</label>
-      <input id="file2" type="file" accept=".xlsx,.xls" />
-    </div>
-    <div class="hint">Excel 2: (vamos usar depois).</div>
-
+    <button class="btn" id="btnReload">Recarregar</button>
     <button class="btn" id="btnClear">Limpar mapa</button>
 
     <div class="legend">
@@ -95,19 +83,18 @@
   </div>
 
   <script>
-    // --- Mapa base ---
+    // ------------------ MAPA ------------------
     const map = L.map('map', { preferCanvas: true }).setView([39.5, -8.0], 7);
 
-    // Tiles OSM (pode trocar depois por fundo "limpo" se quiser)
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap'
     }).addTo(map);
 
-    // Camada onde ficam as paragens
     const stopsLayer = L.featureGroup().addTo(map);
+    const linesLayer = L.featureGroup().addTo(map);
 
-    // --- Ícone triângulo (metro) via SVG ---
+    // ------------------ ÍCONE METRO (TRIÂNGULO) ------------------
     function metroTriangleIcon() {
       const svg = `
         <svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
@@ -123,13 +110,13 @@
       });
     }
 
-    // --- Helpers de leitura/normalização ---
+    // ------------------ HELPERS ------------------
     function norm(s) {
       return String(s ?? '')
         .trim()
         .toLowerCase()
         .normalize('NFD')
-        .replace(/\p{Diacritic}/gu, ''); // remove acentos
+        .replace(/\p{Diacritic}/gu, '');
     }
 
     function pick(obj, keys) {
@@ -153,7 +140,46 @@
       return t || 'desconhecido';
     }
 
-    // --- Renderização das paragens ---
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    function setStatus(msg, kind = 'ok') {
+      const el = document.getElementById('status');
+      el.className = `status ${kind === 'err' ? 'err' : 'ok'}`;
+      el.textContent = msg;
+    }
+
+    // ------------------ LEITURA XLSX (do diretório do GitHub Pages) ------------------
+    async function readXlsxFromUrl(url) {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`Falha ao buscar ${url} (HTTP ${res.status})`);
+      const buf = await res.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const sheetName = wb.SheetNames[0];
+      const ws = wb.Sheets[sheetName];
+      return XLSX.utils.sheet_to_json(ws, { defval: '' });
+    }
+
+    // ------------------ PARAGENS ------------------
+    function mapStopRow(row) {
+      const nrow = {};
+      for (const [k, v] of Object.entries(row)) nrow[norm(k)] = v;
+
+      const nome = pick(nrow, ['nome', 'name', 'paragem', 'stop_name', 'designacao', 'descricao']);
+      const tipo = parseType(pick(nrow, ['tipo', 'type', 'modal', 'modo', 'transporte']));
+
+      const lat = toNumber(pick(nrow, ['lat', 'latitude', 'y', 'coord_y', 'coordenada_y']));
+      const lon = toNumber(pick(nrow, ['lon', 'lng', 'long', 'longitude', 'x', 'coord_x', 'coordenada_x']));
+
+      return { nome, tipo, lat, lon };
+    }
+
     function addStopMarker({ nome, tipo, lat, lon }) {
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
 
@@ -170,7 +196,6 @@
         return m;
       }
 
-      // autocarro (default)
       const c = L.circleMarker([lat, lon], {
         radius: 6,
         weight: 2,
@@ -183,99 +208,135 @@
       return c;
     }
 
-    function escapeHtml(str) {
-      return String(str ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#039;');
+    // ------------------ LINHAS ------------------
+    function splitStopsList(raw) {
+      // Aceita: "A; B; C" ou "A, B, C" ou "A | B | C"
+      const s = String(raw ?? '').trim();
+      if (!s) return [];
+      return s
+        .split(/;|,|\||\r?\n/gi)
+        .map(x => x.trim())
+        .filter(Boolean);
     }
 
-    // --- Leitura do Excel 1 (paragens) ---
-    async function readExcelFile(file) {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array' });
-      const firstSheetName = wb.SheetNames[0];
-      const ws = wb.Sheets[firstSheetName];
-      // defval: '' para manter colunas vazias
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
-      return rows;
-    }
-
-    function mapStopRow(row) {
-      // Cria um dicionário com chaves normalizadas para facilitar
+    function mapLineRow(row) {
       const nrow = {};
       for (const [k, v] of Object.entries(row)) nrow[norm(k)] = v;
 
-      const nome = pick(nrow, ['nome', 'name', 'paragem', 'stop_name', 'designacao', 'descricao']);
-      const tipo = parseType(pick(nrow, ['tipo', 'type', 'modal', 'modo', 'transporte']));
+      const nome = pick(nrow, ['nome', 'name', 'linha', 'route']);
+      const cor = String(pick(nrow, ['cor', 'color']) ?? '#111827').trim() || '#111827';
+      const esp = toNumber(pick(nrow, ['espessura', 'thickness', 'width', 'peso'])) ?? 4;
+      const paragensRaw = pick(nrow, ['paragens', 'stops', 'sequencia', 'ordem']);
+      const paragens = splitStopsList(paragensRaw);
 
-      // latitude/longitude podem vir em várias chaves
-      const lat = toNumber(pick(nrow, ['lat', 'latitude', 'y', 'coord_y', 'coordenada_y']));
-      const lon = toNumber(pick(nrow, ['lon', 'lng', 'long', 'longitude', 'x', 'coord_x', 'coordenada_x']));
-
-      return { nome, tipo, lat, lon };
+      return { nome, cor, espessura: esp, paragens };
     }
 
-    function setStatus(msg, kind = 'ok') {
-      const el = document.getElementById('status');
-      el.className = `status ${kind === 'err' ? 'err' : 'ok'}`;
-      el.textContent = msg;
-    }
-
-    // --- UI handlers ---
-    const fileStops = document.getElementById('fileStops');
-    const file2 = document.getElementById('file2'); // (por enquanto, não usado)
-    const btnClear = document.getElementById('btnClear');
-
-    fileStops.addEventListener('change', async (e) => {
+    // ------------------ CARGA PRINCIPAL ------------------
+    async function loadAll() {
       try {
-        const file = e.target.files?.[0];
-        if (!file) return;
+        setStatus('A carregar Paragens.xlsx e Linhas.xlsx...');
 
-        setStatus('A ler Excel 1 (paragens)...');
-
-        const rows = await readExcelFile(file);
+        // Limpa tudo
         stopsLayer.clearLayers();
+        linesLayer.clearLayers();
 
-        let added = 0;
-        let skipped = 0;
+        // 1) Ler Paragens
+        const stopRows = await readXlsxFromUrl('Paragens.xlsx');
 
-        for (const row of rows) {
+        const stopsIndex = new Map(); // nome normalizado -> {nome, lat, lon, tipo}
+        let addedStops = 0, skippedStops = 0;
+
+        for (const row of stopRows) {
           const s = mapStopRow(row);
           const marker = addStopMarker(s);
-          if (marker) added++;
-          else skipped++;
+          if (marker) {
+            addedStops++;
+            const key = norm(s.nome);
+            if (key) stopsIndex.set(key, s);
+          } else {
+            skippedStops++;
+          }
         }
 
-        if (added > 0) map.fitBounds(stopsLayer.getBounds(), { padding: [20, 20] });
+        // 2) Ler Linhas
+        const lineRows = await readXlsxFromUrl('Linhas.xlsx');
+
+        let addedLines = 0;
+        let missingRefs = 0;
+
+        for (const row of lineRows) {
+          const ln = mapLineRow(row);
+          if (!ln.paragens.length) continue;
+
+          const coords = [];
+          const missing = [];
+
+          for (const stopName of ln.paragens) {
+            const s = stopsIndex.get(norm(stopName));
+            if (s && Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
+              coords.push([s.lat, s.lon]);
+            } else {
+              missing.push(stopName);
+            }
+          }
+
+          // Só desenha se tiver pelo menos 2 pontos
+          if (coords.length >= 2) {
+            const poly = L.polyline(coords, {
+              color: ln.cor,
+              weight: ln.espessura,
+              opacity: 0.9
+            }).addTo(linesLayer);
+
+            const popup = `
+              <b>${escapeHtml(ln.nome || 'Linha')}</b><br/>
+              Cor: ${escapeHtml(ln.cor)}<br/>
+              Espessura: ${ln.espessura}<br/>
+              Paragens: ${escapeHtml(ln.paragens.join(' → '))}
+              ${missing.length ? `<br/><br/><b>Não encontradas:</b> ${escapeHtml(missing.join(', '))}` : ''}
+            `;
+            poly.bindPopup(popup);
+
+            addedLines++;
+          }
+
+          if (missing.length) missingRefs += missing.length;
+        }
+
+        // Enquadrar
+        const all = L.featureGroup([stopsLayer, linesLayer]);
+        if (all.getLayers().length) map.fitBounds(all.getBounds(), { padding: [20, 20] });
 
         setStatus(
-          `Excel 1 carregado.\nParagens desenhadas: ${added}\nLinhas ignoradas (coords inválidas): ${skipped}`,
+          `Carregado com sucesso.\n` +
+          `Paragens desenhadas: ${addedStops}\n` +
+          `Paragens ignoradas (coords inválidas): ${skippedStops}\n` +
+          `Linhas desenhadas: ${addedLines}\n` +
+          `Referências a paragens não encontradas: ${missingRefs}`,
           'ok'
         );
-      } catch (err) {
-        console.error(err);
+      } catch (e) {
+        console.error(e);
         setStatus(
-          'Erro ao ler o Excel 1.\n' +
-          'Confirme que é .xlsx/.xls e que tem colunas de latitude/longitude.\n\n' +
-          String(err),
+          'Erro ao carregar os ficheiros.\n' +
+          'Confirme que Paragens.xlsx e Linhas.xlsx estão na MESMA pasta do index.html no GitHub Pages.\n\n' +
+          String(e),
           'err'
         );
       }
-    });
+    }
 
-    file2.addEventListener('change', () => {
-      // por enquanto, só informativo
-      const f = file2.files?.[0];
-      if (f) setStatus('Excel 2 selecionado (ainda não utilizado).', 'ok');
-    });
-
-    btnClear.addEventListener('click', () => {
+    // Botões
+    document.getElementById('btnReload').addEventListener('click', loadAll);
+    document.getElementById('btnClear').addEventListener('click', () => {
       stopsLayer.clearLayers();
+      linesLayer.clearLayers();
       setStatus('Mapa limpo.', 'ok');
     });
+
+    // Carrega ao abrir
+    loadAll();
   </script>
 </body>
 </html>
