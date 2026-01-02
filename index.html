@@ -3,131 +3,279 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Municípios de Portugal — Contornos + Nomes</title>
+  <title>Mapa de Paragens (Excel → Leaflet)</title>
 
-  <!-- Leaflet via CDN (funciona bem no GitHub Pages).
-       Se quiser 100% offline, dá para “vendorizar” depois. -->
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-    crossorigin=""
-  />
-  <script
-    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-    crossorigin=""
-  ></script>
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+  <!-- SheetJS (XLSX) para ler Excel no browser -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js"></script>
 
   <style>
     html, body { height: 100%; margin: 0; }
-    #map { height: 100%; background: #f6f7f9; }
-
-    .mun-tooltip {
-      background: rgba(255,255,255,0.95);
-      border: 1px solid rgba(0,0,0,0.15);
-      border-radius: 8px;
-      padding: 4px 8px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-      font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      color: #111;
-    }
-
+    #map { height: 100%; }
     .panel {
       position: absolute;
-      z-index: 999;
+      z-index: 1000;
       top: 12px;
       left: 12px;
-      background: rgba(255,255,255,0.95);
+      background: rgba(255,255,255,0.96);
       border: 1px solid rgba(0,0,0,0.12);
-      border-radius: 12px;
+      border-radius: 14px;
       padding: 10px 12px;
-      font: 13px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.10);
+      font: 13px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      box-shadow: 0 10px 28px rgba(0,0,0,0.14);
       max-width: 360px;
     }
-    .panel b { display:block; margin-bottom:6px; }
-    .panel .hint { color:#444; font-size:12px; }
-    .panel .ok { margin-top:8px; font-size:12px; color:#065f46; display:none; }
-    .panel .err { margin-top:8px; font-size:12px; color:#b91c1c; display:none; white-space:pre-wrap; }
+    .panel b { display:block; margin-bottom: 6px; }
+    .row { display:flex; gap:8px; align-items:center; margin-top:8px; }
+    .row label { font-size: 12px; color:#333; min-width: 92px; }
+    .row input[type="file"] { width: 240px; }
+    .hint { font-size: 12px; color:#444; margin-top:6px; }
+    .status { font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
+    .ok { color:#065f46; }
+    .err { color:#b91c1c; }
+    .btn {
+      margin-top: 10px;
+      border: 1px solid rgba(0,0,0,0.18);
+      background: white;
+      border-radius: 10px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .legend {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #333;
+      display: grid;
+      gap: 6px;
+    }
+    .legend-item { display:flex; align-items:center; gap:8px; }
+    .swatch-circle {
+      width: 12px; height: 12px; border-radius: 999px;
+      border: 2px solid #111; background: rgba(255,255,255,0.7);
+    }
+    .swatch-tri {
+      width: 0; height: 0;
+      border-left: 8px solid transparent;
+      border-right: 8px solid transparent;
+      border-bottom: 14px solid #111;
+      transform: translateY(-1px);
+    }
   </style>
 </head>
-
 <body>
   <div id="map"></div>
 
   <div class="panel">
-    <b>Municípios de Portugal</b>
-    <div class="hint">
-      • Passe o rato para ver o nome<br/>
-      • Clique para abrir popup<br/>
-      • Fonte: <code>data/municipios.geojson</code>
+    <b>Mapa de Paragens (Excel)</b>
+
+    <div class="row">
+      <label>Excel 1</label>
+      <input id="fileStops" type="file" accept=".xlsx,.xls" />
     </div>
-    <div id="status-ok" class="ok">GeoJSON carregado com sucesso.</div>
-    <div id="status-err" class="err"></div>
+    <div class="hint">Excel 1: nome, tipo (autocarro/metro), latitude, longitude.</div>
+
+    <div class="row">
+      <label>Excel 2</label>
+      <input id="file2" type="file" accept=".xlsx,.xls" />
+    </div>
+    <div class="hint">Excel 2: (vamos usar depois).</div>
+
+    <button class="btn" id="btnClear">Limpar mapa</button>
+
+    <div class="legend">
+      <div class="legend-item"><span class="swatch-circle"></span> Autocarro (bola)</div>
+      <div class="legend-item"><span class="swatch-tri"></span> Metro (triângulo)</div>
+    </div>
+
+    <div id="status" class="status"></div>
   </div>
 
   <script>
-    const map = L.map('map', { zoomControl: true, preferCanvas: true });
-    map.setView([39.5, -8.0], 7);
+    // --- Mapa base ---
+    const map = L.map('map', { preferCanvas: true }).setView([39.5, -8.0], 7);
 
-    const baseStyle = { color:'#1f2937', weight:1, opacity:0.9, fill:false };
-    const hoverStyle = { color:'#111827', weight:2, opacity:1 };
+    // Tiles OSM (pode trocar depois por fundo "limpo" se quiser)
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
 
-    function getMunicipioName(props) {
-      // Ajuste aqui se seu GeoJSON tiver um campo específico:
-      return (
-        props?.concelho ||
-        props?.municipio ||
-        props?.NAME_2 ||
-        props?.name ||
-        props?.NOME ||
-        props?.DESIGNA ||
-        'Município'
-      );
+    // Camada onde ficam as paragens
+    const stopsLayer = L.featureGroup().addTo(map);
+
+    // --- Ícone triângulo (metro) via SVG ---
+    function metroTriangleIcon() {
+      const svg = `
+        <svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
+          <polygon points="11,2 21,20 1,20" fill="#111827"/>
+          <polygon points="11,5.2 18.2,18.4 3.8,18.4" fill="white" opacity="0.25"/>
+        </svg>`;
+      return L.divIcon({
+        className: '',
+        html: svg,
+        iconSize: [22, 22],
+        iconAnchor: [11, 20],
+        popupAnchor: [0, -18]
+      });
     }
 
-    async function loadMunicipios() {
-      const okEl = document.getElementById('status-ok');
-      const errEl = document.getElementById('status-err');
+    // --- Helpers de leitura/normalização ---
+    function norm(s) {
+      return String(s ?? '')
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/\p{Diacritic}/gu, ''); // remove acentos
+    }
 
-      try {
-        const res = await fetch('data/municipios.geojson', { cache: 'no-store' });
-        if (!res.ok) throw new Error(`HTTP ${res.status} ao buscar data/municipios.geojson`);
-        const geojson = await res.json();
-
-        const layer = L.geoJSON(geojson, {
-          style: baseStyle,
-          onEachFeature: (feature, lyr) => {
-            const nome = getMunicipioName(feature.properties);
-
-            lyr.bindTooltip(nome, {
-              className: 'mun-tooltip',
-              sticky: true,
-              direction: 'top',
-              opacity: 1
-            });
-
-            lyr.bindPopup(`<b>${nome}</b>`);
-
-            lyr.on('mouseover', () => lyr.setStyle(hoverStyle));
-            lyr.on('mouseout', () => lyr.setStyle(baseStyle));
-          }
-        }).addTo(map);
-
-        map.fitBounds(layer.getBounds(), { padding: [12, 12] });
-        okEl.style.display = 'block';
-      } catch (e) {
-        console.error(e);
-        errEl.textContent =
-          'Erro ao carregar o GeoJSON.\n' +
-          'Verifique se o ficheiro existe em: data/municipios.geojson\n\n' +
-          String(e);
-        errEl.style.display = 'block';
+    function pick(obj, keys) {
+      for (const k of keys) {
+        if (obj[k] != null && String(obj[k]).trim() !== '') return obj[k];
       }
+      return null;
     }
 
-    loadMunicipios();
+    function toNumber(x) {
+      if (x == null) return null;
+      const s = String(x).trim().replace(',', '.');
+      const v = Number(s);
+      return Number.isFinite(v) ? v : null;
+    }
+
+    function parseType(raw) {
+      const t = norm(raw);
+      if (t.includes('metro')) return 'metro';
+      if (t.includes('autocarro') || t.includes('onibus') || t.includes('ônibus') || t.includes('bus')) return 'autocarro';
+      return t || 'desconhecido';
+    }
+
+    // --- Renderização das paragens ---
+    function addStopMarker({ nome, tipo, lat, lon }) {
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+      const popupHtml = `
+        <b>${escapeHtml(nome || 'Paragem')}</b><br/>
+        Tipo: ${escapeHtml(tipo)}<br/>
+        Lat: ${lat.toFixed(6)}<br/>
+        Lon: ${lon.toFixed(6)}
+      `;
+
+      if (tipo === 'metro') {
+        const m = L.marker([lat, lon], { icon: metroTriangleIcon() }).bindPopup(popupHtml);
+        m.addTo(stopsLayer);
+        return m;
+      }
+
+      // autocarro (default)
+      const c = L.circleMarker([lat, lon], {
+        radius: 6,
+        weight: 2,
+        color: '#111827',
+        fillColor: '#ffffff',
+        fillOpacity: 0.7
+      }).bindPopup(popupHtml);
+
+      c.addTo(stopsLayer);
+      return c;
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    // --- Leitura do Excel 1 (paragens) ---
+    async function readExcelFile(file) {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const firstSheetName = wb.SheetNames[0];
+      const ws = wb.Sheets[firstSheetName];
+      // defval: '' para manter colunas vazias
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+      return rows;
+    }
+
+    function mapStopRow(row) {
+      // Cria um dicionário com chaves normalizadas para facilitar
+      const nrow = {};
+      for (const [k, v] of Object.entries(row)) nrow[norm(k)] = v;
+
+      const nome = pick(nrow, ['nome', 'name', 'paragem', 'stop_name', 'designacao', 'descricao']);
+      const tipo = parseType(pick(nrow, ['tipo', 'type', 'modal', 'modo', 'transporte']));
+
+      // latitude/longitude podem vir em várias chaves
+      const lat = toNumber(pick(nrow, ['lat', 'latitude', 'y', 'coord_y', 'coordenada_y']));
+      const lon = toNumber(pick(nrow, ['lon', 'lng', 'long', 'longitude', 'x', 'coord_x', 'coordenada_x']));
+
+      return { nome, tipo, lat, lon };
+    }
+
+    function setStatus(msg, kind = 'ok') {
+      const el = document.getElementById('status');
+      el.className = `status ${kind === 'err' ? 'err' : 'ok'}`;
+      el.textContent = msg;
+    }
+
+    // --- UI handlers ---
+    const fileStops = document.getElementById('fileStops');
+    const file2 = document.getElementById('file2'); // (por enquanto, não usado)
+    const btnClear = document.getElementById('btnClear');
+
+    fileStops.addEventListener('change', async (e) => {
+      try {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        setStatus('A ler Excel 1 (paragens)...');
+
+        const rows = await readExcelFile(file);
+        stopsLayer.clearLayers();
+
+        let added = 0;
+        let skipped = 0;
+
+        for (const row of rows) {
+          const s = mapStopRow(row);
+          const marker = addStopMarker(s);
+          if (marker) added++;
+          else skipped++;
+        }
+
+        if (added > 0) map.fitBounds(stopsLayer.getBounds(), { padding: [20, 20] });
+
+        setStatus(
+          `Excel 1 carregado.\nParagens desenhadas: ${added}\nLinhas ignoradas (coords inválidas): ${skipped}`,
+          'ok'
+        );
+      } catch (err) {
+        console.error(err);
+        setStatus(
+          'Erro ao ler o Excel 1.\n' +
+          'Confirme que é .xlsx/.xls e que tem colunas de latitude/longitude.\n\n' +
+          String(err),
+          'err'
+        );
+      }
+    });
+
+    file2.addEventListener('change', () => {
+      // por enquanto, só informativo
+      const f = file2.files?.[0];
+      if (f) setStatus('Excel 2 selecionado (ainda não utilizado).', 'ok');
+    });
+
+    btnClear.addEventListener('click', () => {
+      stopsLayer.clearLayers();
+      setStatus('Mapa limpo.', 'ok');
+    });
   </script>
 </body>
 </html>
