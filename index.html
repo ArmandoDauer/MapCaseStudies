@@ -64,6 +64,26 @@
 <body>
   <div id="map"></div>
 
+  <div class="panel">
+    <b>Mapa (Paragens + Linhas)</b>
+    <div class="hint">
+      Este exemplo carrega automaticamente (da mesma pasta do <code>index.html</code>):<br>
+      • <code>Paragens.xlsx</code><br>
+      • <code>Linhas.xlsx</code><br><br>
+      Se aparecer <i>“XLSX is not defined”</i>, é porque o script da SheetJS não carregou (ver Console / Network).
+    </div>
+
+    <button class="btn" id="btnReload">Recarregar</button>
+    <button class="btn" id="btnClear">Limpar mapa</button>
+
+    <div class="legend">
+      <div class="legend-item"><span class="swatch-circle"></span> Autocarro (bola)</div>
+      <div class="legend-item"><span class="swatch-tri"></span> Metro (triângulo)</div>
+    </div>
+
+    <div id="status" class="status"></div>
+  </div>
+
   <script>
     // ------------------ MAPA ------------------
     const map = L.map('map', { preferCanvas: true }).setView([41.235, -8.621], 13);
@@ -181,7 +201,7 @@
       }
 
       const c = L.circleMarker([lat, lon], {
-        radius: 2,
+        radius: 6,
         weight: 2,
         color: '#111827',
         fillColor: '#ffffff',
