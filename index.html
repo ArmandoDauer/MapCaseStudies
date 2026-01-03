@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mapa (Paragens + Linhas)</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+  <!-- SheetJS (XLSX) - CDNJS (xlsx 0.18.5) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; }
+
+    .panel {
+      position: absolute;
+      z-index: 1000;
+      top: 12px;
+      left: 12px;
+      background: rgba(255,255,255,0.96);
+      border: 1px solid rgba(0,0,0,0.12);
+      border-radius: 14px;
+      padding: 10px 12px;
+      font: 13px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      box-shadow: 0 10px 28px rgba(0,0,0,0.14);
+      max-width: 420px;
+    }
+    .panel b { display:block; margin-bottom: 6px; }
+    .hint { font-size: 12px; color:#444; margin-top:6px; }
+    .status { font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
+    .ok { color:#065f46; }
+    .err { color:#b91c1c; }
+
+    .legend { margin-top: 10px; font-size: 12px; color: #333; display: grid; gap: 6px; }
+    .legend-item { display:flex; align-items:center; gap:8px; }
+    .swatch-circle {
+      width: 12px; height: 12px; border-radius: 999px;
+      border: 2px solid #111; background: rgba(255,255,255,0.7);
+    }
+    .swatch-tri {
+      width: 0; height: 0;
+      border-left: 8px solid transparent;
+      border-right: 8px solid transparent;
+      border-bottom: 14px solid #111;
+      transform: translateY(-1px);
+    }
+    .btn {
+      margin-top: 10px;
+      border: 1px solid rgba(0,0,0,0.18);
+      background: white;
+      border-radius: 10px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      margin-right: 8px;
+    }
+    code { background: rgba(0,0,0,0.04); padding: 1px 4px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel">
+    <b>Mapa (Paragens + Linhas)</b>
+    <div class="hint">
+      Este exemplo carrega automaticamente (da mesma pasta do <code>index.html</code>):<br>
+      • <code>Paragens.xlsx</code><br>
+      • <code>Linhas.xlsx</code><br><br>
+      Se aparecer <i>“XLSX is not defined”</i>, é porque o script da SheetJS não carregou (ver Console / Network).
+    </div>
+
+    <button class="btn" id="btnReload">Recarregar</button>
+    <button class="btn" id="btnClear">Limpar mapa</button>
+
+    <div class="legend">
+      <div class="legend-item"><span class="swatch-circle"></span> Autocarro (bola)</div>
+      <div class="legend-item"><span class="swatch-tri"></span> Metro (triângulo)</div>
+    </div>
+
+    <div id="status" class="status"></div>
+  </div>
+
+  <script>
+    // ------------------ MAPA ------------------
+    const map = L.map('map', { preferCanvas: true }).setView([41.235, -8.621], 13);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    const stopsLayer = L.featureGroup().addTo(map);
+    const linesLayer = L.featureGroup().addTo(map);
+
+    // ------------------ ÍCONE METRO (TRIÂNGULO) ------------------
+    function metroTriangleIcon() {
+      const svg = `
+        <svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
+          <polygon points="11,2 21,20 1,20" fill="#111827"/>
+          <polygon points="11,5.2 18.2,18.4 3.8,18.4" fill="white" opacity="0.25"/>
+        </svg>`;
+      return L.divIcon({
+        className: '',
+        html: svg,
+        iconSize: [22, 22],
+        iconAnchor: [11, 20],
+        popupAnchor: [0, -18]
+      });
+    }
+
+    // ------------------ HELPERS ------------------
+    function norm(s) {
+      return String(s ?? '')
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/\p{Diacritic}/gu, '');
+    }
+
+    function pick(obj, keys) {
+      for (const k of keys) {
+        if (obj[k] != null && String(obj[k]).trim() !== '') return obj[k];
+      }
+      return null;
+    }
+
+    function toNumber(x) {
+      if (x == null) return null;
+      const s = String(x).trim().replace(',', '.');
+      const v = Number(s);
+      return Number.isFinite(v) ? v : null;
+    }
+
+    function parseType(raw) {
+      const t = norm(raw);
+      if (t.includes('metro')) return 'metro';
+      if (t.includes('autocarro') || t.includes('onibus') || t.includes('ônibus') || t.includes('bus')) return 'autocarro';
+      return t || 'desconhecido';
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    function setStatus(msg, kind = 'ok') {
+      const el = document.getElementById('status');
+      el.className = `status ${kind === 'err' ? 'err' : 'ok'}`;
+      el.textContent = msg;
+    }
+
+    // ------------------ LEITURA XLSX ------------------
+    async function readXlsxFromUrl(url) {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`Falha ao buscar ${url} (HTTP ${res.status})`);
+      const buf = await res.arrayBuffer();
+
+      // XLSX vem do script CDNJS
+      const wb = XLSX.read(buf, { type: 'array' });
+      const sheetName = wb.SheetNames[0];
+      const ws = wb.Sheets[sheetName];
+      return XLSX.utils.sheet_to_json(ws, { defval: '' });
+    }
+
+    // ------------------ PARAGENS ------------------
+    function mapStopRow(row) {
+      const nrow = {};
+      for (const [k, v] of Object.entries(row)) nrow[norm(k)] = v;
+
+      const nome = pick(nrow, ['nome', 'name', 'paragem', 'stop_name', 'designacao', 'descricao']);
+      const tipo = parseType(pick(nrow, ['tipo', 'type', 'modal', 'modo', 'transporte']));
+
+      const lat = toNumber(pick(nrow, ['lat', 'latitude', 'y', 'coord_y', 'coordenada_y']));
+      const lon = toNumber(pick(nrow, ['lon', 'lng', 'long', 'longitude', 'x', 'coord_x', 'coordenada_x']));
+
+      return { nome, tipo, lat, lon };
+    }
+
+    function addStopMarker({ nome, tipo, lat, lon }) {
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+      const popupHtml = `
+        <b>${escapeHtml(nome || 'Paragem')}</b><br/>
+        Tipo: ${escapeHtml(tipo)}<br/>
+        Lat: ${lat.toFixed(6)}<br/>
+        Lon: ${lon.toFixed(6)}
+      `;
+
+      if (tipo === 'metro') {
+        const m = L.marker([lat, lon], { icon: metroTriangleIcon() }).bindPopup(popupHtml);
+        m.addTo(stopsLayer);
+        return m;
+      }
+
+      const c = L.circleMarker([lat, lon], {
+        radius: 6,
+        weight: 2,
+        color: '#111827',
+        fillColor: '#ffffff',
+        fillOpacity: 0.7
+      }).bindPopup(popupHtml);
+
+      c.addTo(stopsLayer);
+      return c;
+    }
+
+    // ------------------ LINHAS ------------------
+    function splitStopsList(raw) {
+      const s = String(raw ?? '').trim();
+      if (!s) return [];
+      return s.split(/;|,|\||\r?\n/gi).map(x => x.trim()).filter(Boolean);
+    }
+
+    function mapLineRow(row) {
+      const nrow = {};
+      for (const [k, v] of Object.entries(row)) nrow[norm(k)] = v;
+
+      const nome = pick(nrow, ['nome', 'name', 'linha', 'route']);
+      const cor = String(pick(nrow, ['cor', 'color']) ?? '#111827').trim() || '#111827';
+      const esp = toNumber(pick(nrow, ['espessura', 'thickness', 'width', 'peso'])) ?? 4;
+      const paragensRaw = pick(nrow, ['paragens', 'stops', 'sequencia', 'ordem']);
+      const paragens = splitStopsList(paragensRaw);
+
+      return { nome, cor, espessura: esp, paragens };
+    }
+
+    // ------------------ CARGA PRINCIPAL ------------------
+    async function loadAll() {
+      try {
+        if (typeof XLSX === 'undefined') {
+          throw new Error('XLSX is not defined (o script da SheetJS não carregou).');
+        }
+
+        setStatus('A carregar Paragens.xlsx e Linhas.xlsx...');
+
+        stopsLayer.clearLayers();
+        linesLayer.clearLayers();
+
+        // 1) Paragens
+        const stopRows = await readXlsxFromUrl('Paragens.xlsx');
+
+        const stopsIndex = new Map(); // nome normalizado -> stop
+        let addedStops = 0, skippedStops = 0;
+
+        for (const row of stopRows) {
+          const s = mapStopRow(row);
+          const marker = addStopMarker(s);
+          if (marker) {
+            addedStops++;
+            const key = norm(s.nome);
+            if (key) stopsIndex.set(key, s);
+          } else {
+            skippedStops++;
+          }
+        }
+
+        // 2) Linhas
+        const lineRows = await readXlsxFromUrl('Linhas.xlsx');
+
+        let addedLines = 0;
+        let missingRefs = 0;
+
+        for (const row of lineRows) {
+          const ln = mapLineRow(row);
+          if (!ln.paragens.length) continue;
+
+          const coords = [];
+          const missing = [];
+
+          for (const stopName of ln.paragens) {
+            const s = stopsIndex.get(norm(stopName));
+            if (s && Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
+              coords.push([s.lat, s.lon]);
+            } else {
+              missing.push(stopName);
+            }
+          }
+
+          if (coords.length >= 2) {
+            const poly = L.polyline(coords, {
+              color: ln.cor,
+              weight: ln.espessura,
+              opacity: 0.9
+            }).addTo(linesLayer);
+
+            const popup = `
+              <b>${escapeHtml(ln.nome || 'Linha')}</b><br/>
+              Cor: ${escapeHtml(ln.cor)}<br/>
+              Espessura: ${ln.espessura}<br/>
+              Paragens: ${escapeHtml(ln.paragens.join(' → '))}
+              ${missing.length ? `<br/><br/><b>Não encontradas:</b> ${escapeHtml(missing.join(', '))}` : ''}
+            `;
+            poly.bindPopup(popup);
+
+            addedLines++;
+          }
+
+          if (missing.length) missingRefs += missing.length;
+        }
+
+        const all = L.featureGroup([stopsLayer, linesLayer]);
+        if (all.getLayers().length) map.fitBounds(all.getBounds(), { padding: [20, 20] });
+
+        setStatus(
+          `Carregado com sucesso.\n` +
+          `Paragens desenhadas: ${addedStops}\n` +
+          `Paragens ignoradas (coords inválidas): ${skippedStops}\n` +
+          `Linhas desenhadas: ${addedLines}\n` +
+          `Referências a paragens não encontradas: ${missingRefs}`,
+          'ok'
+        );
+      } catch (e) {
+        console.error(e);
+        setStatus(
+          'Erro ao carregar os ficheiros.\n\n' + String(e),
+          'err'
+        );
+      }
+    }
+
+    document.getElementById('btnReload').addEventListener('click', loadAll);
+    document.getElementById('btnClear').addEventListener('click', () => {
+      stopsLayer.clearLayers();
+      linesLayer.clearLayers();
+      setStatus('Mapa limpo.', 'ok');
+    });
+
+    loadAll();
+  </script>
+</body>
+</html>
